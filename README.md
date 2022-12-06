@@ -1,1 +1,1 @@
-# GMI_REc
+# GMI_Rec
