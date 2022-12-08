@@ -69,9 +69,19 @@ def compute_diversity(item_list, item_cate_map):
 
 def help_knn(user_embs, item_embs, topN):
     # pair_distance = euclidean_distances(user_embs, item_embs)
-    pair_product = np.matmul(user_embs, item_embs.T)
-    I = np.argpartition(-pair_product, kth=np.arange(item_embs.shape[0]), axis=-1)[:, :topN]
+    rating_pred = np.matmul(user_embs, item_embs.T)
+    # I = np.argpartition(-pair_product, kth=np.arange(item_embs.shape[0]), axis=-1)[:, :topN]
+    # D = np.take_along_axis(pair_product, I, axis=-1)
+
+    ## for loop is better
+    ind = np.argpartition(rating_pred, -topN)
+    ind = ind[:, -topN:]
+    arr_ind = rating_pred[np.arange(len(rating_pred))[:, None], ind]
+    arr_ind_argsort = np.argsort(arr_ind)[np.arange(len(rating_pred)), ::-1]
+    I = ind[np.arange(len(rating_pred))[:, None], arr_ind_argsort]
+
     D = np.take_along_axis(pair_product, I, axis=-1)
+
     return D, I
 
 
