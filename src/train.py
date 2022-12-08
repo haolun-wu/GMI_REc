@@ -1,5 +1,6 @@
-#coding:utf-8
+# coding:utf-8
 import warnings
+
 warnings.filterwarnings('ignore')
 
 import argparse
@@ -20,7 +21,7 @@ import tensorflow.compat.v1 as tf
 from data_iterator import DataIterator
 from model import *
 from tensorboardX import SummaryWriter
-
+from sklearn.metrics.pairwise import euclidean_distances
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-p', type=str, default='train', help='train | test')
@@ -38,10 +39,12 @@ parser.add_argument('--topN', type=int, default=50)
 
 best_metric = 0
 
+
 def prepare_data(src, target):
     nick_id, item_id = src
     hist_item, hist_mask = target
     return nick_id, item_id, hist_item, hist_mask
+
 
 def load_item_cate(source):
     item_cate = {}
@@ -53,14 +56,24 @@ def load_item_cate(source):
             item_cate[item_id] = cate_id
     return item_cate
 
+
 def compute_diversity(item_list, item_cate_map):
     n = len(item_list)
     diversity = 0.0
     for i in range(n):
-        for j in range(i+1, n):
+        for j in range(i + 1, n):
             diversity += item_cate_map[item_list[i]] != item_cate_map[item_list[j]]
-    diversity /= ((n-1) * n / 2)
+    diversity /= ((n - 1) * n / 2)
     return diversity
+
+
+def help_knn(user_embs, item_embs, topN):
+    # pair_distance = euclidean_distances(user_embs, item_embs)
+    pair_product = np.matmul(user_embs, item_embs.T)
+    I = np.argpartition(-pair_product, kth=np.arange(item_embs.shape[0]), axis=-1)[:, :topN]
+    D = np.take_along_axis(pair_product, I, axis=-1)
+    return D, I
+
 
 def evaluate_full(sess, test_data, model, model_path, batch_size, item_cate_map, save=True, coef=None):
     topN = args.topN
@@ -70,13 +83,12 @@ def evaluate_full(sess, test_data, model, model_path, batch_size, item_cate_map,
     # res = faiss.StandardGpuResources()
     # flat_config = faiss.GpuIndexFlatConfig()
     # flat_config.device = 0
-
-    try:
-        # gpu_index = faiss.GpuIndexFlatIP(res, args.embedding_dim, flat_config)
-        gpu_index = faiss.IndexFlatIP(args.embedding_dim)
-        gpu_index.add(item_embs)
-    except Exception as e:
-        return {}
+    #
+    # try:
+    #     gpu_index = faiss.GpuIndexFlatIP(res, args.embedding_dim, flat_config)
+    #     gpu_index.add(item_embs)
+    # except Exception as e:
+    #     return {}
 
     total = 0
     total_recall = 0.0
@@ -90,7 +102,8 @@ def evaluate_full(sess, test_data, model, model_path, batch_size, item_cate_map,
         user_embs = model.output_user(sess, [hist_item, hist_mask])
 
         if len(user_embs.shape) == 2:
-            D, I = gpu_index.search(user_embs, topN)
+            # D, I = gpu_index.search(user_embs, topN)
+            D, I = help_knn(user_embs, item_embs, topN)
             for i, iid_list in enumerate(item_id):
                 recall = 0
                 dcg = 0.0
@@ -98,10 +111,10 @@ def evaluate_full(sess, test_data, model, model_path, batch_size, item_cate_map,
                 for no, iid in enumerate(I[i]):
                     if iid in true_item_set:
                         recall += 1
-                        dcg += 1.0 / math.log(no+2, 2)
+                        dcg += 1.0 / math.log(no + 2, 2)
                 idcg = 0.0
                 for no in range(recall):
-                    idcg += 1.0 / math.log(no+2, 2)
+                    idcg += 1.0 / math.log(no + 2, 2)
                 total_recall += recall * 1.0 / len(iid_list)
                 if recall > 0:
                     total_ndcg += dcg / idcg
@@ -111,15 +124,17 @@ def evaluate_full(sess, test_data, model, model_path, batch_size, item_cate_map,
         else:
             ni = user_embs.shape[1]
             user_embs = np.reshape(user_embs, [-1, user_embs.shape[-1]])
-            D, I = gpu_index.search(user_embs, topN)
+            # D, I = gpu_index.search(user_embs, topN)
+            D, I = help_knn(user_embs, item_embs, topN)
             for i, iid_list in enumerate(item_id):
                 recall = 0
                 dcg = 0.0
                 item_list_set = set()
                 item_cor_list = []
                 if coef is None:
-                    item_list = list(zip(np.reshape(I[i*ni:(i+1)*ni], -1), np.reshape(D[i*ni:(i+1)*ni], -1)))
-                    item_list.sort(key=lambda x:x[1], reverse=True)
+                    item_list = list(
+                        zip(np.reshape(I[i * ni:(i + 1) * ni], -1), np.reshape(D[i * ni:(i + 1) * ni], -1)))
+                    item_list.sort(key=lambda x: x[1], reverse=True)
                     for j in range(len(item_list)):
                         if item_list[j][0] not in item_list_set and item_list[j][0] != 0:
                             item_list_set.add(item_list[j][0])
@@ -127,8 +142,9 @@ def evaluate_full(sess, test_data, model, model_path, batch_size, item_cate_map,
                             if len(item_list_set) >= topN:
                                 break
                 else:
-                    origin_item_list = list(zip(np.reshape(I[i*ni:(i+1)*ni], -1), np.reshape(D[i*ni:(i+1)*ni], -1)))
-                    origin_item_list.sort(key=lambda x:x[1], reverse=True)
+                    origin_item_list = list(
+                        zip(np.reshape(I[i * ni:(i + 1) * ni], -1), np.reshape(D[i * ni:(i + 1) * ni], -1)))
+                    origin_item_list.sort(key=lambda x: x[1], reverse=True)
                     item_list = []
                     tmp_item_set = set()
                     for (x, y) in origin_item_list:
@@ -154,19 +170,19 @@ def evaluate_full(sess, test_data, model, model_path, batch_size, item_cate_map,
                 for no, iid in enumerate(item_cor_list):
                     if iid in true_item_set:
                         recall += 1
-                        dcg += 1.0 / math.log(no+2, 2)
+                        dcg += 1.0 / math.log(no + 2, 2)
                 idcg = 0.0
                 for no in range(recall):
-                    idcg += 1.0 / math.log(no+2, 2)
+                    idcg += 1.0 / math.log(no + 2, 2)
                 total_recall += recall * 1.0 / len(iid_list)
                 if recall > 0:
                     total_ndcg += dcg / idcg
                     total_hitrate += 1
                 if not save:
                     total_diversity += compute_diversity(list(item_list_set), item_cate_map)
-        
+
         total += len(item_id)
-    
+
     recall = total_recall / total
     ndcg = total_ndcg / total
     hitrate = total_hitrate * 1.0 / total
@@ -176,26 +192,32 @@ def evaluate_full(sess, test_data, model, model_path, batch_size, item_cate_map,
         return {'recall': recall, 'ndcg': ndcg, 'hitrate': hitrate}
     return {'recall': recall, 'ndcg': ndcg, 'hitrate': hitrate, 'diversity': diversity}
 
+
 def get_model(dataset, model_type, item_count, batch_size, maxlen):
-    if model_type == 'DNN': 
+    if model_type == 'DNN':
         model = Model_DNN(item_count, args.embedding_dim, args.hidden_size, batch_size, maxlen)
-    elif model_type == 'GRU4REC': 
+    elif model_type == 'GRU4REC':
         model = Model_GRU4REC(item_count, args.embedding_dim, args.hidden_size, batch_size, maxlen)
     elif model_type == 'MIND':
         relu_layer = True if dataset == 'book' else False
-        model = Model_MIND(item_count, args.embedding_dim, args.hidden_size, batch_size, args.num_interest, maxlen, relu_layer=relu_layer)
+        model = Model_MIND(item_count, args.embedding_dim, args.hidden_size, batch_size, args.num_interest, maxlen,
+                           relu_layer=relu_layer)
     elif model_type == 'ComiRec-DR':
-        model = Model_ComiRec_DR(item_count, args.embedding_dim, args.hidden_size, batch_size, args.num_interest, maxlen)
+        model = Model_ComiRec_DR(item_count, args.embedding_dim, args.hidden_size, batch_size, args.num_interest,
+                                 maxlen)
     elif model_type == 'ComiRec-SA':
-        model = Model_ComiRec_SA(item_count, args.embedding_dim, args.hidden_size, batch_size, args.num_interest, maxlen)
+        model = Model_ComiRec_SA(item_count, args.embedding_dim, args.hidden_size, batch_size, args.num_interest,
+                                 maxlen)
     else:
-        print ("Invalid model_type : %s", model_type)
+        print("Invalid model_type : %s", model_type)
         return
     return model
 
+
 def get_exp_name(dataset, model_type, batch_size, lr, maxlen, save=True):
     extr_name = input('Please input the experiment name: ')
-    para_name = '_'.join([dataset, model_type, 'b'+str(batch_size), 'lr'+str(lr), 'd'+str(args.embedding_dim), 'len'+str(maxlen)])
+    para_name = '_'.join([dataset, model_type, 'b' + str(batch_size), 'lr' + str(lr), 'd' + str(args.embedding_dim),
+                          'len' + str(maxlen)])
     exp_name = para_name + '_' + extr_name
 
     while os.path.exists('runs/' + exp_name) and save:
@@ -209,20 +231,21 @@ def get_exp_name(dataset, model_type, batch_size, lr, maxlen, save=True):
 
     return exp_name
 
+
 def train(
         train_file,
         valid_file,
         test_file,
         cate_file,
         item_count,
-        dataset = "book",
-        batch_size = 128,
-        maxlen = 100,
-        test_iter = 50,
-        model_type = 'DNN',
-        lr = 0.001,
-        max_iter = 100,
-        patience = 20
+        dataset="book",
+        batch_size=128,
+        maxlen=100,
+        test_iter=50,
+        model_type='DNN',
+        lr=0.001,
+        max_iter=100,
+        patience=20
 ):
     exp_name = get_exp_name(dataset, model_type, batch_size, lr, maxlen)
 
@@ -237,10 +260,10 @@ def train(
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
         train_data = DataIterator(train_file, batch_size, maxlen, train_flag=0)
         valid_data = DataIterator(valid_file, batch_size, maxlen, train_flag=1)
-        
+
         model = get_model(dataset, model_type, item_count, batch_size, maxlen)
         print("model:", model, type(model))
-        
+
         sess.run(tf.global_variables_initializer())
         sess.run(tf.local_variables_initializer())
 
@@ -256,7 +279,7 @@ def train(
             for src, tgt in train_data:
                 data_iter = prepare_data(src, tgt)
                 loss = model.train(sess, list(data_iter) + [lr])
-                
+
                 loss_sum += loss
                 iter += 1
 
@@ -264,7 +287,8 @@ def train(
                     metrics = evaluate_full(sess, valid_data, model, best_model_path, batch_size, item_cate_map)
                     log_str = 'iter: %d, train loss: %.4f' % (iter, loss_sum / test_iter)
                     if metrics != {}:
-                        log_str += ', ' + ', '.join(['valid ' + key + ': %.6f' % value for key, value in metrics.items()])
+                        log_str += ', ' + ', '.join(
+                            ['valid ' + key + ': %.6f' % value for key, value in metrics.items()])
                     print(exp_name)
                     print(log_str)
 
@@ -272,7 +296,7 @@ def train(
                     if metrics != {}:
                         for key, value in metrics.items():
                             writer.add_scalar('eval/' + key, value, iter)
-                    
+
                     if 'recall' in metrics:
                         recall = metrics['recall']
                         global best_metric
@@ -287,11 +311,11 @@ def train(
 
                     loss_sum = 0.0
                     test_time = time.time()
-                    print("time interval: %.4f min" % ((test_time-start_time)/60.0))
+                    print("time interval: %.4f min" % ((test_time - start_time) / 60.0))
                     sys.stdout.flush()
-                
+
                 if iter >= max_iter * 100:
-                        break
+                    break
         except KeyboardInterrupt:
             print('-' * 89)
             print('Exiting from training early')
@@ -305,15 +329,16 @@ def train(
         metrics = evaluate_full(sess, test_data, model, best_model_path, batch_size, item_cate_map, save=False)
         print(', '.join(['test ' + key + ': %.6f' % value for key, value in metrics.items()]))
 
+
 def test(
         test_file,
         cate_file,
         item_count,
-        dataset = "book",
-        batch_size = 128,
-        maxlen = 100,
-        model_type = 'DNN',
-        lr = 0.001
+        dataset="book",
+        batch_size=128,
+        maxlen=100,
+        model_type='DNN',
+        lr=0.001
 ):
     exp_name = get_exp_name(dataset, model_type, batch_size, lr, maxlen, save=False)
     best_model_path = "best_model/" + exp_name + '/'
@@ -323,18 +348,20 @@ def test(
 
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
         model.restore(sess, best_model_path)
-        
+
         test_data = DataIterator(test_file, batch_size, maxlen, train_flag=2)
-        metrics = evaluate_full(sess, test_data, model, best_model_path, batch_size, item_cate_map, save=False, coef=args.coef)
+        metrics = evaluate_full(sess, test_data, model, best_model_path, batch_size, item_cate_map, save=False,
+                                coef=args.coef)
         print(', '.join(['test ' + key + ': %.6f' % value for key, value in metrics.items()]))
+
 
 def output(
         item_count,
-        dataset = "book",
-        batch_size = 128,
-        maxlen = 100,
-        model_type = 'DNN',
-        lr = 0.001
+        dataset="book",
+        batch_size=128,
+        maxlen=100,
+        model_type='DNN',
+        lr=0.001
 ):
     exp_name = get_exp_name(dataset, model_type, batch_size, lr, maxlen, save=False)
     best_model_path = "best_model/" + exp_name + '/'
@@ -346,9 +373,11 @@ def output(
         item_embs = model.output_item(sess)
         np.save('output/' + exp_name + '_emb.npy', item_embs)
 
+
 if __name__ == '__main__':
     print(sys.argv)
     args = parser.parse_args()
+    print("args:", args)
     SEED = args.random_seed
 
     tf.set_random_seed(SEED)
@@ -376,8 +405,8 @@ if __name__ == '__main__':
         item_count = 8863
         batch_size = 128
         maxlen = 10
-        test_iter = 100
-    
+        test_iter = 10
+
     train_file = path + args.dataset + '_train.txt'
     valid_file = path + args.dataset + '_valid.txt'
     test_file = path + args.dataset + '_test.txt'
@@ -385,14 +414,14 @@ if __name__ == '__main__':
     dataset = args.dataset
 
     if args.p == 'train':
-        train(train_file=train_file, valid_file=valid_file, test_file=test_file, cate_file=cate_file, 
-              item_count=item_count, dataset=dataset, batch_size=batch_size, maxlen=maxlen, test_iter=test_iter, 
+        train(train_file=train_file, valid_file=valid_file, test_file=test_file, cate_file=cate_file,
+              item_count=item_count, dataset=dataset, batch_size=batch_size, maxlen=maxlen, test_iter=test_iter,
               model_type=args.model_type, lr=args.learning_rate, max_iter=args.max_iter, patience=args.patience)
     elif args.p == 'test':
-        test(test_file=test_file, cate_file=cate_file, item_count=item_count, dataset=dataset, batch_size=batch_size, 
+        test(test_file=test_file, cate_file=cate_file, item_count=item_count, dataset=dataset, batch_size=batch_size,
              maxlen=maxlen, model_type=args.model_type, lr=args.learning_rate)
     elif args.p == 'output':
-        output(item_count=item_count, dataset=dataset, batch_size=batch_size, maxlen=maxlen, 
+        output(item_count=item_count, dataset=dataset, batch_size=batch_size, maxlen=maxlen,
                model_type=args.model_type, lr=args.learning_rate)
     else:
         print('do nothing...')

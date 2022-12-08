@@ -78,7 +78,7 @@ class DataIterator:
                 hist_item_list.append(item_list[:k] + [0] * (self.maxlen - k))
                 hist_mask_list.append([1.0] * k + [0.0] * (self.maxlen - k))
 
-        print("")
+        # print("")
 
         # print("user_id_list:", len(user_id_list), user_id_list[0])
         # print("item_id_list:", len(item_id_list), item_id_list[0])
